@@ -44,6 +44,8 @@ const pushToTalkDiv = document.getElementById('pushToTalkDiv');
 const switchMaxVideoQuality = document.getElementById('switchMaxVideoQuality');
 const switchKeepAspectRatio = document.getElementById('switchKeepAspectRatio');
 const switchPushToTalk = document.getElementById('switchPushToTalk');
+const videoSenderCodecSelect = document.getElementById('videoSenderCodecSelect');
+const videoSenderMaxBitrateSelect = document.getElementById('videoSenderMaxBitrateSelect');
 const sessionTime = document.getElementById('sessionTime');
 const chat = document.getElementById('chat');
 const chatOpenBtn = document.getElementById('chatOpenBtn');
@@ -56,6 +58,8 @@ const roomURL = window.location.origin + '/?room=' + roomId;
 
 const config = {
     forceToMaxVideoAndFps: window.localStorage.forceToMaxVideoAndFps == 'true' || false,
+    videoSenderCodec: window.localStorage.videoSenderCodec || 'default',
+    videoSenderMaxBitrate: window.localStorage.videoSenderMaxBitrate || 'default',
     keepAspectRatio: window.localStorage.keepAspectRatio == 'true' || false,
 };
 
@@ -198,9 +202,8 @@ function getDocumentElementsById() {
     myAudioStatusIcon = document.getElementById('myAudioStatusIcon');
 }
 
-function thereIsPeerConnections() {
-    if (Object.keys(peerConnections).length === 0) return false;
-    return true;
+function thereArePeerConnections() {
+    return Object.keys(peerConnections).length > 0;
 }
 
 function initClient() {
@@ -255,6 +258,7 @@ function handleConnect() {
             handleEvents();
             showWaitingUser();
             joinToChannel();
+            refreshBitrate();
         });
     }
 }
@@ -292,6 +296,116 @@ function handleServerInfo(config) {
     surveyURL = config.surveyURL;
 }
 
+function resetCodec() {
+    config.videoSenderCodec = 'default';
+    window.localStorage.videoSenderCodec = 'default';
+    videoSenderCodecSelect.selectedIndex = 0;
+    popupMessage('warning', 'Video codec', 'One of the callers does not support the selected codec.', 'top', 6000);
+}
+
+function resetMaxBitRate() {
+    config.videoSenderMaxBitrate = 'default';
+    window.localStorage.videoSenderMaxBitrate = 'default';
+    videoSenderMaxBitrateSelect.selectedIndex = 0;
+    popupMessage('warning', 'Video max bitrate', 'One of the callers does not support the selected Max bitrate.', 'top', 6000);
+}
+
+function getVideoState(peerConnection) {
+    const videoTransceiver = peerConnection
+        .getTransceivers()
+        .find((s) => (s.sender.track ? s.sender.track.kind === 'video' : false));
+    if (!videoTransceiver) return [True, True];
+
+    const sendState = videoTransceiver.sender.track.muted;
+    const recvState = videoTransceiver.receiver.track.muted;
+
+    return [sendState, recvState];
+}
+
+function handleCodec(peerConnection) {
+    if (config.videoSenderCodec === 'default') return;
+
+    try {
+        const videoTransceiver = peerConnection
+            .getTransceivers()
+            .find((s) => (s.sender.track ? s.sender.track.kind === 'video' : false));
+
+        if (!videoTransceiver) throw new Error("Video Transceiver not found");
+
+        if (videoTransceiver.setCodecPreferences) {
+            const supportedCodec = RTCRtpSender.getCapabilities('video').codecs;
+            const selectedCodec = config.videoSenderCodec
+                .split('/')
+                .map((name) => supportedCodec.filter((codec) => codec.mimeType.includes(name)))
+                .flat();
+            if (selectedCodec.length == 0) throw new Error("This browser does not support the selected codec");
+            videoTransceiver.setCodecPreferences(selectedCodec);
+            console.log('Codecs:', selectedCodec);
+        }
+    } catch (error) {
+        console.error('Error in handleCodec:', error);
+        resetCodec();
+    }
+}
+
+async function refreshCodec() {
+    if (!thereArePeerConnections()) return;
+    try {
+        for (const peerId in peerConnections) {
+            const peerConnection = peerConnections[peerId];
+            const state1 = getVideoState(peerConnection);
+
+            handleRtcOffer(peerId);
+            await peerConnection.restartIce();
+
+            // Wait and check check video stats
+            await new Promise(r => setTimeout(r, 2000));
+            const state2 = getVideoState(peerConnection);
+            if (!(state1[0]==state2[0] && state1[1]==state2[1])) throw new Error("Video stopped after changing codec");
+        }
+    } catch (error) {
+        console.error('Error in refreshCodec:', error);
+        resetCodec();
+        // Use a full reconnect
+        signalingSocket.disconnect();
+        signalingSocket.connect();
+    }
+}
+
+async function refreshBitrate() {
+    if (!thereArePeerConnections()) return;
+    try {
+        for (const peerId in peerConnections) {
+            const peerConnection = peerConnections[peerId];
+            const videoTransceiver = peerConnection
+                .getTransceivers()
+                .find((transceiver) => transceiver.sender.track && transceiver.sender.track.kind === 'video');
+            if (videoTransceiver) {
+                const videoSender = videoTransceiver.sender;
+                const videoParameters = await videoSender.getParameters();
+                if (config.videoSenderMaxBitrate === 'default'){
+                    if (videoParameters.encodings[0].hasOwnProperty("maxBitrate")) {
+                        delete videoParameters.encodings[0].maxBitrate;
+                    }
+                } else {
+                    const newMaxBitrate = parseInt(config.videoSenderMaxBitrate) * 1000000;
+                    videoParameters.encodings[0].maxBitrate = newMaxBitrate;
+                }
+                await videoSender.setParameters(videoParameters);
+                console.log(`Max bitrate changed for ${peerId} to ${config.videoSenderMaxBitrate} Mbps`, {
+                    encodings: videoParameters.encodings[0],
+                });
+            }
+        }
+    } catch (error) {
+        console.error('Error in refreshBitrate:', error);
+        resetMaxBitRate();
+        // Use a full reconnect
+        signalingSocket.disconnect();
+        signalingSocket.connect();
+    }
+}
+
 function handleAddPeer(config) {
     if (roomPeersCount > 2) {
         return roomIsBusy();
@@ -319,8 +433,9 @@ function handleAddPeer(config) {
     if (shouldCreateOffer) {
         handleRtcOffer(peerId);
     }
-    if (thereIsPeerConnections()) {
+    if (thereArePeerConnections()) {
         elemDisplay(waitingDivContainer, false);
+        refreshBitrate();
     }
     handleBodyEvents();
     playSound('join');
@@ -403,6 +518,7 @@ function handleAddTracks(peerId) {
 function handleRtcOffer(peerId) {
     peerConnections[peerId].onnegotiationneeded = () => {
         console.log('Creating RTC offer to', peerId);
+        handleCodec(peerConnections[peerId]);
         peerConnections[peerId]
             .createOffer()
             .then((localDescription) => {
@@ -436,6 +552,7 @@ function handleSessionDescription(config) {
             console.log('Set remote description done!');
             if (sessionDescription.type == 'offer') {
                 console.log('Creating answer');
+                handleCodec(peerConnections[peerId]);
                 peerConnections[peerId]
                     .createAnswer()
                     .then((localDescription) => {
@@ -494,7 +611,7 @@ function handleRemovePeer(config) {
     delete peerConnections[peerId];
     delete peerMediaElements[peerId];
 
-    if (!thereIsPeerConnections()) {
+    if (!thereArePeerConnections()) {
         elemDisplay(waitingDivContainer, true);
         elemDisplay(buttonsBar, false);
         elemDisplay(settings, false);
@@ -793,6 +910,7 @@ function handleEvents() {
     };
     videoSource.onchange = (e) => {
         changeCamera(e.target.value);
+        refreshBitrate();
     };
     videoQualitySelect.onchange = (e) => {
         refreshVideoConstraints();
@@ -814,6 +932,20 @@ function handleEvents() {
                 6000,
             );
         }
+        playSound('switch');
+    };
+    videoSenderCodecSelect.value = config.videoSenderCodec;
+    videoSenderCodecSelect.onchange = (e) => {
+        config.videoSenderCodec = e.target.value;
+        window.localStorage.videoSenderCodec = e.target.value;
+        refreshCodec();
+        playSound('switch');
+    };
+    videoSenderMaxBitrateSelect.value = config.videoSenderMaxBitrate;
+    videoSenderMaxBitrateSelect.onchange = (e) => {
+        config.videoSenderMaxBitrate = e.target.value;
+        window.localStorage.videoSenderMaxBitrate = e.target.value;
+        refreshBitrate();
         playSound('switch');
     };
     switchKeepAspectRatio.checked = config.keepAspectRatio;
@@ -1191,7 +1323,7 @@ function refreshMyLocalVideoStream(stream) {
 }
 
 function refreshMyVideoStreamToPeers(stream) {
-    if (!thereIsPeerConnections()) return;
+    if (!thereArePeerConnections()) return;
     for (let peerId in peerConnections) {
         let videoSender = peerConnections[peerId]
             .getSenders()
@@ -1209,7 +1341,7 @@ function refreshMyLocalAudioStream(stream) {
 }
 
 function refreshMyLocalAudioStreamToPeers(stream) {
-    if (!thereIsPeerConnections()) return;
+    if (!thereArePeerConnections()) return;
     for (let peerId in peerConnections) {
         let audioSender = peerConnections[peerId]
             .getSenders()
