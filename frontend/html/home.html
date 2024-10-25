@@ -32,7 +32,14 @@
     <body>
         <form>
             <label for="room">Room</label>
-            <input id="roomIdInput" type="text" name="room" value="leader2" maxlength="36" required readonly />
+<input id="roomIdInput" type="text" name="room" maxlength="36" required readonly />
+
+<script>
+    // Set the value of the room input to 'leader2' when the page loads
+    document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('roomIdInput').value = 'leader2';
+    });
+</script>
             <label for="username">Username</label>
             <input
                 id="userNameInput"
