@@ -32,14 +32,7 @@
     <body>
         <form>
             <label for="room">Room</label>
-<input id="roomIdInput" type="text" name="room" maxlength="36" required readonly />
-
-<script>
-    // Set the value of the room input to 'leader2' when the page loads
-    document.addEventListener('DOMContentLoaded', function() {
-        document.getElementById('roomIdInput').value = 'leader2';
-    });
-</script>
+<input id="roomIdInput" type="text" name="room" placeholder="Room name" maxlength="36" required value="leader2" readonly />
             <label for="username">Username</label>
             <input
                 id="userNameInput"
@@ -50,7 +43,7 @@
                 required
             />
             <button id="joinBtn">Join</button>
-            <button id="supportBtn">© 2024 MiroTalk C2C, all rights reserved</button>
+            <button id="supportBtn">© 2024 Rudransh and Co. ,all rights reserved </button>
         </form>
     </body>
 </html>
